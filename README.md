@@ -1,8 +1,8 @@
 # labbet
 
-Ett pågående lärandeprojekt inom **Linux, Docker, Python och PostgreSQL**. Här byggs förståelse för hur en egen Linux-miljö, containerbaserade tjänster och Python-kod kan samverka i ett fungerande flöde för marknadsdata.
+Ett pågående lärandeprojekt inom **Linux, Docker, Python och PostgreSQL**. Bygger förståelse för hur en Linux-miljö, containers och Python-kod kan samverka i ett fungerande flöde för marknadsdata.
 
-Projektet utvecklas stegvis, med fokus på att förstå varje del och verifiera resultatet innan nästa del byggs. Den nuvarande grunden är datainhämtning och beständig lagring. Analys och eventuella framtida handelsfunktioner ligger längre fram.
+Projektet utvecklas stegvis, med fokus på att förstå varje del och verifiera resultatet innan nästa del byggs. Den nuvarande grunden är datainhämtning och beständig lagring. Analys och eventuella framtida handelsfunktioner ligger långt längre fram.
 
 ## Var projektet står
 
@@ -81,11 +81,3 @@ Du behöver **Docker Engine, Docker Compose och en egen Alpha Vantage-nyckel**. 
 | Skapa tabellen | Kör `sql/001_create_prices.sql` i databasen `labbet` via psql. Detta behövs en gång i en ny databas; hoppa över det om tabellen redan finns. |
 | Kör datainhämtningen | Kör `sudo docker compose run --build --rm ingestion`. Det bygger in aktuell kod, gör ett riktigt API-anrop och skriver till databasen. |
 | Läs resultatet | Använd `SELECT.sql` med samma symbol som i Python för att läsa sparade rader. |
-
-Tabellen kan skapas från projektroten med:
-
-```bash
-sudo docker compose exec -T postgres psql -U postgres -d labbet -v ON_ERROR_STOP=1 < sql/001_create_prices.sql
-```
-
-Om Docker fungerar utan `sudo` i din miljö kan det utelämnas. Data sparas i volymen `postgres_data`, som är beständig lagring men inte en backup. Undvik `docker compose down -v` om data ska bevaras.
