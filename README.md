@@ -69,15 +69,3 @@ Datainhämtningen körs manuellt för en symbol åt gången. Vald ticker fylls i
 Befintliga rader uppdateras inte när datakällan ändrar sina värden. Valideringen är fortfarande begränsad, och metadata för källa, börs, valuta och justeringsstatus lagras ännu inte. API-åtkomst och anropsgränser beror på den egna nyckeln och datakällans villkor.
 
 Fortsatt utveckling är tänkt att bygga vidare på datakvalitet och verifierbara beräkningar innan analys och backtesting blir aktuella. **Ingen handelsstrategi, backtesting, mäklarintegration eller handel är implementerad.**
-
-## Vill du testa själv?
-
-Du behöver **Docker Engine, Docker Compose och en egen Alpha Vantage-nyckel**. Python och dess beroenden körs i Docker.
-
-| Moment | Kort instruktion |
-| --- | --- |
-| Lokal konfiguration | Kopiera `.env.example` till `.env` och fyll i eget `POSTGRES_PASSWORD` och `ALPHAVANTAGE_API_KEY`. Håll `.env` utanför Git. |
-| Starta databasen | Kör `sudo docker compose up -d postgres` från projektroten och vänta på status `healthy`, som visas med `sudo docker compose ps postgres`. |
-| Skapa tabellen | Kör `sql/001_create_prices.sql` i databasen `labbet` via psql. Detta behövs en gång i en ny databas; hoppa över det om tabellen redan finns. |
-| Kör datainhämtningen | Kör `sudo docker compose run --build --rm ingestion`. Det bygger in aktuell kod, gör ett riktigt API-anrop och skriver till databasen. |
-| Läs resultatet | Använd `SELECT.sql` med samma symbol som i Python för att läsa sparade rader. |
