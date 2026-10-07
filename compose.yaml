@@ -1,0 +1,46 @@
+name: trading-bot
+
+services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_DB: labbet
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Lösenord saknas i .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    networks:
+      - db_access
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d labbet"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+  ingestion:
+    build: ./ingestion
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: labbet
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Lösenord saknas i .env}
+      ALPHAVANTAGE_API_KEY: ${ALPHAVANTAGE_API_KEY:?API-nyckel saknas i .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+      - egress
+volumes:
+  postgres_data:
+
+networks:
+  backend:
+    internal: true
+  egress: {}
+  db_access: {}

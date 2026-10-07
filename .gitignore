@@ -1,0 +1,24 @@
+# Miljövariabler och hemligheter
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+
+# Lokala arbetsdokument
+/AGENTS.md
+/Labbet-Trading-Bot-STATE.md
+/ingestion/requirements.txtc
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Lokala data, dumpar och loggar
+/backups/
+/data/
+*.dump
+*.backup
+*.log
