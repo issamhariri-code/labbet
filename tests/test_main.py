@@ -265,5 +265,324 @@ class MainValidationTests(unittest.TestCase):
                     )
                     self.connect.assert_not_called()
 
+    def test_nonpositive_prices_stop_before_database(self):
+        fields = {
+            "1. open": "öppningspris",
+            "2. high": "högsta pris",
+            "3. low": "lägsta pris",
+            "4. close": "stängningspris",
+        }
+
+        for field, name in fields.items():
+            for value in ("0", "-0", "-0.01", "-10"):
+                for preceding in (False, True):
+                    with self.subTest(field=field, value=value, preceding=preceding):
+                        self.connect.reset_mock()
+                        invalid = self.complete.copy()
+                        invalid[field] = value
+                        prices = (
+                            {"2026-09-29": self.complete.copy()}
+                            if preceding else {}
+                        )
+                        prices["2026-09-30"] = invalid
+
+                        with self.assertRaises(ValueError) as error:
+                            self.run_main(prices)
+
+                        self.assertEqual(
+                            str(error.exception),
+                            f"TEST 2026-09-30: {name} måste vara större än noll",
+                        )
+                        self.connect.assert_not_called()
+
+    def test_high_below_low_stops_before_database(self):
+        for preceding in (False, True):
+            with self.subTest(preceding=preceding):
+                self.connect.reset_mock()
+                row = self.complete.copy()
+                row.update({"2. high": "9", "3. low": "11"})
+                prices = (
+                    {"2026-09-29": self.complete.copy()}
+                    if preceding else {}
+                )
+                prices["2026-09-30"] = row
+
+                with self.assertRaises(ValueError) as error:
+                    self.run_main(prices)
+
+                self.assertEqual(
+                    str(error.exception),
+                    "TEST 2026-09-30: högsta pris är lägre än lägsta pris",
+                )
+                self.connect.assert_not_called()
+
+    def test_equal_high_and_low_is_accepted(self):
+        row = self.complete.copy()
+        row.update({
+            "1. open": "10", "2. high": "10",
+            "3. low": "10", "4. close": "10",
+        })
+        self.run_main({"2026-09-30": row})
+        self.connect.assert_called_once_with(connect_timeout=10)
+
+    def test_open_outside_interval_stops_before_database(self):
+        for value in ("8.99", "11.01"):
+            for preceding in (False, True):
+                with self.subTest(value=value, preceding=preceding):
+                    self.connect.reset_mock()
+                    row = self.complete.copy()
+                    row["1. open"] = value
+                    prices = (
+                        {"2026-09-29": self.complete.copy()}
+                        if preceding else {}
+                    )
+                    prices["2026-09-30"] = row
+
+                    with self.assertRaises(ValueError) as error:
+                        self.run_main(prices)
+
+                    self.assertEqual(
+                        str(error.exception),
+                        "TEST 2026-09-30: öppningspris ligger utanför prisintervallet",
+                    )
+                    self.connect.assert_not_called()
+
+    def test_open_inside_and_at_bounds_is_accepted(self):
+        for value in ("9", "10", "11"):
+            with self.subTest(value=value):
+                self.connect.reset_mock()
+                row = self.complete.copy()
+                row["1. open"] = value
+                self.run_main({"2026-09-30": row})
+                self.connect.assert_called_once_with(connect_timeout=10)
+
+    def test_close_outside_interval_stops_before_database(self):
+        for value in ("8.99", "11.01"):
+            for preceding in (False, True):
+                with self.subTest(value=value, preceding=preceding):
+                    self.connect.reset_mock()
+                    row = self.complete.copy()
+                    row["4. close"] = value
+                    prices = (
+                        {"2026-09-29": self.complete.copy()}
+                        if preceding else {}
+                    )
+                    prices["2026-09-30"] = row
+
+                    with self.assertRaises(ValueError) as error:
+                        self.run_main(prices)
+
+                    self.assertEqual(
+                        str(error.exception),
+                        "TEST 2026-09-30: stängningspris ligger utanför prisintervallet",
+                    )
+                    self.connect.assert_not_called()
+
+    def test_close_inside_and_at_bounds_is_accepted(self):
+        for value in ("9", "10", "11"):
+            with self.subTest(value=value):
+                self.connect.reset_mock()
+                row = self.complete.copy()
+                row["4. close"] = value
+                self.run_main({"2026-09-30": row})
+                self.connect.assert_called_once_with(connect_timeout=10)
+
+    def test_volume_above_limit_stops_before_database(self):
+        for number in (9_223_372_036_854_775_808, 10**30):
+            for convert in (str, int):
+                for preceding in (False, True):
+                    with self.subTest(
+                        number=number, kind=convert.__name__, preceding=preceding,
+                    ):
+                        self.connect.reset_mock()
+                        row = self.complete.copy()
+                        row["5. volume"] = convert(number)
+                        prices = (
+                            {"2026-09-29": self.complete.copy()}
+                            if preceding else {}
+                        )
+                        prices["2026-09-30"] = row
+
+                        with self.assertRaises(ValueError) as error:
+                            self.run_main(prices)
+
+                        self.assertEqual(
+                            str(error.exception),
+                            "TEST 2026-09-30: volym överskrider databasens heltalsgräns",
+                        )
+                        self.connect.assert_not_called()
+
+    def test_volume_at_and_below_limit_is_preserved(self):
+        for number in (9_223_372_036_854_775_806, 9_223_372_036_854_775_807):
+            for convert in (str, int):
+                with self.subTest(number=number, kind=convert.__name__):
+                    self.connect.reset_mock()
+                    row = self.complete.copy()
+                    row["5. volume"] = convert(number)
+                    self.run_main({"2026-09-30": row})
+                    self.connect.assert_called_once_with(connect_timeout=10)
+                    cursor = self.connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+                    cursor.executemany.assert_called_once()
+                    volume = cursor.executemany.call_args.args[1][0][-1]
+                    self.assertEqual(volume, number)
+                    self.assertIs(type(volume), int)
+
+    def test_prices_above_limit_stop_before_database(self):
+        fields = {
+            "1. open": "öppningspris",
+            "2. high": "högsta pris",
+            "3. low": "lägsta pris",
+            "4. close": "stängningspris",
+        }
+
+        for field, name in fields.items():
+            for value in ("999999999999.9999991", "1000000000000", "1E+30"):
+                for preceding in (False, True):
+                    with self.subTest(field=field, value=value, preceding=preceding):
+                        self.connect.reset_mock()
+                        row = self.complete.copy()
+                        row[field] = value
+                        prices = (
+                            {"2026-09-29": self.complete.copy()}
+                            if preceding else {}
+                        )
+                        prices["2026-09-30"] = row
+
+                        with self.assertRaises(ValueError) as error:
+                            self.run_main(prices)
+
+                        self.assertEqual(
+                            str(error.exception),
+                            f"TEST 2026-09-30: {name} överskrider databasens prisgräns",
+                        )
+                        self.connect.assert_not_called()
+
+    def test_prices_at_and_below_limit_are_preserved(self):
+        for field, position in (
+            ("1. open", 2), ("2. high", 3), ("3. low", 4), ("4. close", 5),
+        ):
+            for value in ("999999999999.999998", "999999999999.999999"):
+                with self.subTest(field=field, value=value):
+                    self.connect.reset_mock()
+                    row = self.complete.copy()
+                    row["2. high"] = "999999999999.999999"
+                    # Håll övriga priser inom intervallet när lägsta pris höjs.
+                    if field == "3. low":
+                        row["1. open"] = row["4. close"] = "999999999999.999999"
+                    row[field] = value
+                    self.run_main({"2026-09-30": row})
+                    self.connect.assert_called_once_with(connect_timeout=10)
+                    cursor = self.connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+                    cursor.executemany.assert_called_once()
+                    price = cursor.executemany.call_args.args[1][0][position]
+                    self.assertEqual(price, Decimal(value))
+                    self.assertIs(type(price), Decimal)
+
+    def test_excess_precision_stops_before_database(self):
+        cases = (
+            ("1. open", "öppningspris", "10.0000001"),
+            ("2. high", "högsta pris", "11.0000001"),
+            ("3. low", "lägsta pris", "9.0000001"),
+            ("4. close", "stängningspris", "10.5000001"),
+        )
+
+        for field, name, excess in cases:
+            for value in (excess, "0.0000001"):
+                for preceding in (False, True):
+                    with self.subTest(field=field, value=value, preceding=preceding):
+                        self.connect.reset_mock()
+                        row = self.complete.copy()
+                        row[field] = value
+                        prices = (
+                            {"2026-09-29": self.complete.copy()}
+                            if preceding else {}
+                        )
+                        prices["2026-09-30"] = row
+
+                        with self.assertRaises(ValueError) as error:
+                            self.run_main(prices)
+
+                        self.assertEqual(
+                            str(error.exception),
+                            f"TEST 2026-09-30: {name}: kan inte lagras exakt med sex decimaler",
+                        )
+                        self.connect.assert_not_called()
+
+    def test_six_decimals_and_trailing_zero_are_preserved(self):
+        for field, position, value in (
+            ("1. open", 2, "10.123456"),
+            ("2. high", 3, "11.123456"),
+            ("3. low", 4, "9.123456"),
+            ("4. close", 5, "10.523456"),
+        ):
+            for suffix in ("", "0"):
+                with self.subTest(field=field, value=value + suffix):
+                    self.connect.reset_mock()
+                    row = self.complete.copy()
+                    row[field] = value + suffix
+                    self.run_main({"2026-09-30": row})
+                    self.connect.assert_called_once_with(connect_timeout=10)
+                    cursor = self.connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+                    cursor.executemany.assert_called_once()
+                    price = cursor.executemany.call_args.args[1][0][position]
+                    self.assertIs(type(price), Decimal)
+                    self.assertEqual(str(price), value + suffix)
+
+    def test_invalid_price_types_stop_before_database(self):
+        fields = {
+            "1. open": "öppningspris",
+            "2. high": "högsta pris",
+            "3. low": "lägsta pris",
+            "4. close": "stängningspris",
+        }
+        invalid_values = (
+            10.0, 10.5, True, False, Decimal("10"),
+            ["10"], {"price": "10"}, ("10",), b"10", complex(10, 0),
+        )
+
+        for field, name in fields.items():
+            for value in invalid_values:
+                for preceding in (False, True):
+                    with self.subTest(
+                        field=field, value=value, kind=type(value).__name__,
+                        preceding=preceding,
+                    ):
+                        self.connect.reset_mock()
+                        row = self.complete.copy()
+                        row[field] = value
+                        prices = (
+                            {"2026-09-29": self.complete.copy()}
+                            if preceding else {}
+                        )
+                        prices["2026-09-30"] = row
+
+                        with self.assertRaises(ValueError) as error:
+                            self.run_main(prices)
+
+                        self.assertEqual(
+                            str(error.exception),
+                            f"TEST 2026-09-30: {name} måste vara text eller heltal",
+                        )
+                        self.connect.assert_not_called()
+
+    def test_string_and_integer_prices_are_preserved(self):
+        for field, position in (
+            ("1. open", 2), ("2. high", 3), ("3. low", 4), ("4. close", 5),
+        ):
+            for value in ("10", 10):
+                with self.subTest(field=field, value=value, kind=type(value).__name__):
+                    self.connect.reset_mock()
+                    row = self.complete.copy()
+                    for price_field in ("1. open", "2. high", "3. low", "4. close"):
+                        row[price_field] = "10"
+                    row[field] = value
+                    self.run_main({"2026-09-30": row})
+                    self.connect.assert_called_once_with(connect_timeout=10)
+                    cursor = self.connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+                    cursor.executemany.assert_called_once()
+                    price = cursor.executemany.call_args.args[1][0][position]
+                    self.assertEqual(price, Decimal("10"))
+                    self.assertIs(type(price), Decimal)
+
 if __name__ == "__main__":
     unittest.main()
