@@ -2,7 +2,7 @@
 
 import ast
 from contextlib import redirect_stdout
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 import io
 from pathlib import Path
@@ -148,32 +148,46 @@ class MainValidationTests(unittest.TestCase):
         self.connect.assert_not_called()
 
     def test_negative_volume_has_clear_error(self):
-        invalid = self.complete.copy()
-        invalid["5. volume"] = "-1"
+        for volume in ("-1", -1):
+            for preceding in (False, True):
+                with self.subTest(
+                    volume=volume, kind=type(volume).__name__, preceding=preceding,
+                ):
+                    self.connect.reset_mock()
+                    invalid = self.complete.copy()
+                    invalid["5. volume"] = volume
+                    prices = (
+                        {"2026-09-29": self.complete.copy()}
+                        if preceding else {}
+                    )
+                    prices["2026-09-30"] = invalid
 
-        with self.assertRaises(ValueError) as error:
-            self.run_main({"2026-09-30": invalid})
+                    with self.assertRaises(ValueError) as error:
+                        self.run_main(prices)
 
-        self.assertEqual(
-            str(error.exception),
-            "TEST 2026-09-30: volym får inte vara negativ",
-        )
-        self.connect.assert_not_called()
+                    self.assertEqual(
+                        str(error.exception),
+                        "TEST 2026-09-30: volym får inte vara negativ",
+                    )
+                    self.connect.assert_not_called()
 
     def test_zero_volume_is_accepted(self):
-        values = self.complete.copy()
-        values["5. volume"] = "0"
+        for volume in ("0", 0):
+            with self.subTest(volume=volume, kind=type(volume).__name__):
+                self.connect.reset_mock()
+                values = self.complete.copy()
+                values["5. volume"] = volume
 
-        self.run_main({"2026-09-30": values})
+                self.run_main({"2026-09-30": values})
 
-        self.connect.assert_called_once_with(connect_timeout=10)
-        connection = self.connect.return_value.__enter__.return_value
-        cursor = connection.cursor.return_value.__enter__.return_value
-        cursor.executemany.assert_called_once()
+                self.connect.assert_called_once_with(connect_timeout=10)
+                connection = self.connect.return_value.__enter__.return_value
+                cursor = connection.cursor.return_value.__enter__.return_value
+                cursor.executemany.assert_called_once()
 
-        rows = cursor.executemany.call_args.args[1]
-        self.assertEqual(rows[0][-1], 0)
-        self.assertIs(type(rows[0][-1]), int)
+                rows = cursor.executemany.call_args.args[1]
+                self.assertEqual(rows[0][-1], 0)
+                self.assertIs(type(rows[0][-1]), int)
 
     def test_fractional_volume_has_clear_error(self):
         for volume in ("1.5", 1.5):
@@ -192,17 +206,28 @@ class MainValidationTests(unittest.TestCase):
                 self.connect.assert_not_called()
 
     def test_invalid_volume_type_has_clear_error(self):
-        invalid = self.complete.copy()
-        invalid["5. volume"] = []
+        for volume in ([], True, False, 10.0):
+            for preceding in (False, True):
+                with self.subTest(
+                    volume=volume, kind=type(volume).__name__, preceding=preceding,
+                ):
+                    self.connect.reset_mock()
+                    invalid = self.complete.copy()
+                    invalid["5. volume"] = volume
+                    prices = (
+                        {"2026-09-29": self.complete.copy()}
+                        if preceding else {}
+                    )
+                    prices["2026-09-30"] = invalid
 
-        with self.assertRaises(ValueError) as error:
-            self.run_main({"2026-09-30": invalid})
+                    with self.assertRaises(ValueError) as error:
+                        self.run_main(prices)
 
-        self.assertEqual(
-            str(error.exception),
-            "TEST 2026-09-30: volym är inte ett giltigt heltal",
-        )
-        self.connect.assert_not_called()
+                    self.assertEqual(
+                        str(error.exception),
+                        "TEST 2026-09-30: volym är inte ett giltigt heltal",
+                    )
+                    self.connect.assert_not_called()
 
     def test_invalid_trade_date_has_clear_error(self):
         with self.assertRaises(ValueError) as error:
@@ -583,6 +608,102 @@ class MainValidationTests(unittest.TestCase):
                     price = cursor.executemany.call_args.args[1][0][position]
                     self.assertEqual(price, Decimal("10"))
                     self.assertIs(type(price), Decimal)
+
+    def _assert_trade_date_rejected(
+        self, value, after_valid_row, cause_type, cause_message=None,
+    ):
+        self.connect.reset_mock()
+        prices = {}
+        if after_valid_row:
+            prices["2026-09-29"] = self.complete.copy()
+        prices[value] = self.complete.copy()
+        try:
+            with self.assertRaises(ValueError) as caught:
+                self.run_main(prices)
+            self.assertIs(type(caught.exception), ValueError)
+            self.assertEqual(
+                str(caught.exception), f"TEST {value}: ogiltigt handelsdatum",
+            )
+            self.assertIs(type(caught.exception.__cause__), cause_type)
+            if cause_message is not None:
+                self.assertEqual(str(caught.exception.__cause__), cause_message)
+        finally:
+            self.connect.assert_not_called()
+
+    def test_invalid_and_noncanonical_date_strings_stop_before_database(self):
+        invalid = (
+            "2026-02-30", "2026-02-29", "1900-02-29", "2026-13-01",
+            "2026-00-01", "2026-09-00", "2026-09-31", "0000-01-01",
+            "10000-01-01", "", "abc", "2026-9-30", "2026-09-3",
+            "30-09-2026", "2026/09/30", " 2026-09-30", "2026-09-30 ",
+            "2026-09-30T00:00:00", "2026-09-30Z",
+        )
+        noncanonical = ("20260930", "2026-W40-3", "2026W403")
+        # Dessa går att parsa, men bryter mot det valda YYYY-MM-DD-kontraktet.
+        for value in noncanonical:
+            self.assertEqual(date.fromisoformat(value), date(2026, 9, 30))
+        for value in invalid + noncanonical:
+            for after_valid_row in (False, True):
+                with self.subTest(value=value, after_valid_row=after_valid_row):
+                    message = (
+                        "Datumet måste ha formatet YYYY-MM-DD"
+                        if value in noncanonical else None
+                    )
+                    self._assert_trade_date_rejected(
+                        value, after_valid_row, ValueError, message,
+                    )
+
+    def test_nonstring_date_keys_stop_before_database(self):
+        values = (
+            None, 20260930, 2026.0930, True, False, date(2026, 9, 30),
+            datetime(2026, 9, 30), b"2026-09-30", ("2026", 9, 30),
+        )
+        for value in values:
+            for after_valid_row in (False, True):
+                with self.subTest(
+                    value=value, value_type=type(value).__name__,
+                    after_valid_row=after_valid_row,
+                ):
+                    self._assert_trade_date_rejected(value, after_valid_row, TypeError)
+
+    def test_canonical_dates_keep_values_types_and_batch(self):
+        cases = (
+            ("2026-09-30", date(2026, 9, 30)),
+            ("2024-02-29", date(2024, 2, 29)),
+            ("2000-02-29", date(2000, 2, 29)),
+            ("1900-02-28", date(1900, 2, 28)),
+            ("2026-01-01", date(2026, 1, 1)),
+            ("2026-12-31", date(2026, 12, 31)),
+            ("0001-01-01", date(1, 1, 1)),
+            ("9999-12-31", date(9999, 12, 31)),
+        )
+        for value, expected in cases:
+            for after_valid_row in (False, True):
+                with self.subTest(value=value, after_valid_row=after_valid_row):
+                    self.connect.reset_mock()
+                    prices = {}
+                    expected_dates = []
+                    if after_valid_row:
+                        prices["2026-09-29"] = self.complete.copy()
+                        expected_dates.append(date(2026, 9, 29))
+                    prices[value] = self.complete.copy()
+                    expected_dates.append(expected)
+                    self.run_main(prices)
+                    self.connect.assert_called_once_with(connect_timeout=10)
+                    cursor = self.connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+                    cursor.executemany.assert_called_once()
+                    rows = cursor.executemany.call_args.args[1]
+                    self.assertEqual(rows, [
+                        ("TEST", parsed_date, Decimal("10.00"), Decimal("11.00"),
+                         Decimal("9.00"), Decimal("10.50"), 1000)
+                        for parsed_date in expected_dates
+                    ])
+                    for row in rows:
+                        self.assertEqual(
+                            [type(item) for item in row],
+                            [str, date, Decimal, Decimal, Decimal, Decimal, int],
+                        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -122,7 +122,9 @@ for trade_date, values in prices.items():
 
     try:
         parsed_date = date.fromisoformat(trade_date)
-    except ValueError as error:
+        if trade_date != parsed_date.isoformat():
+            raise ValueError("Datumet måste ha formatet YYYY-MM-DD")
+    except (TypeError, ValueError) as error:
         raise ValueError(
             f"{symbol} {trade_date}: ogiltigt handelsdatum"
         ) from error
