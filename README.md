@@ -43,8 +43,10 @@ Python körs som ett engångsjobb i en egen container. PostgreSQL är en separat
 │   ├── requirements.txt
 │   ├── main.py
 │   └── market_data.py
-└── sql/
-    └── 001_create_prices.sql
+├── sql/
+│   └── 001_create_prices.sql
+└── tests/
+    └── test_main.py
 ```
 
 Ansvaret är uppdelat mellan tre delar: **`market_data.py` hämtar**, **`main.py` omvandlar och sparar**, och **SQL-skriptet skapar tabellen**. Tabellskapandet körs separat och är inte en del av Python-jobbet.
