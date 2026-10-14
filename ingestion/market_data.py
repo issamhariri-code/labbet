@@ -2,6 +2,7 @@ import json
 import os
 import urllib.parse
 import urllib.request
+import urllib.error
 
 
 def fetch_daily_prices(symbol):
@@ -14,8 +15,25 @@ def fetch_daily_prices(symbol):
 
     url = "https://www.alphavantage.co/query?" + params
 
-    with urllib.request.urlopen(url, timeout=30) as response:
-        data = json.load(response)
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            data = json.load(response)
+    except TimeoutError as error:
+        raise RuntimeError(
+            f"{symbol}: tidsgränsen för hämtning av kursdata överskreds"
+        ) from error
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(
+            f"{symbol}: datakällan svarade med HTTP-fel {error.code}"
+        ) from error
+    except urllib.error.URLError as error:
+        if isinstance(error.reason, TimeoutError):
+            raise RuntimeError(
+                f"{symbol}: tidsgränsen för hämtning av kursdata överskreds"
+            ) from error
+        raise RuntimeError(
+            f"{symbol}: nätverksfel vid hämtning av kursdata"
+        ) from error
 
     prices = data.get("Time Series (Daily)")
 
