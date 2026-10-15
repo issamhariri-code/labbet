@@ -35,7 +35,27 @@ def fetch_daily_prices(symbol):
             f"{symbol}: nätverksfel vid hämtning av kursdata"
         ) from error
 
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            f"{symbol}: datakällans svar är inte giltig JSON"
+        ) from error
+
+    except UnicodeDecodeError as error:
+        raise RuntimeError(
+            f"{symbol}: datakällans svar har ogiltig teckenkodning"
+        ) from error
+
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"{symbol}: datakällans svar måste vara ett JSON-objekt"
+        )
+
     prices = data.get("Time Series (Daily)")
+
+    if prices is not None and not isinstance(prices, dict):
+        raise RuntimeError(
+            f"{symbol}: dagsserien måste vara ett JSON-objekt"
+        )
 
     if not prices:
         message = (
