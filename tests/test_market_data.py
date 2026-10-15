@@ -120,6 +120,31 @@ class MarketTimeoutTests(unittest.TestCase):
         )
         self.assertIs(error.__cause__, original)
 
+    def invalid_json_responses(self):
+        broken = b'{"Time Series (Daily)":'
+        return (
+            ('empty', b'', 0),
+            ('html', b'<html><body>Service unavailable</body></html>', 0),
+            ('broken', broken, len(broken)),
+        )
+
+    def assert_json_error(self, error, response, body, position):
+        self.assertIs(type(error), RuntimeError)
+        self.assertEqual(
+            str(error), 'TEST: datakällans svar är inte giltig JSON',
+        )
+        original = error.__cause__
+        self.assertIs(type(original), json.JSONDecodeError)
+        self.assertEqual(original.doc, body.decode('utf-8'))
+        self.assertEqual(original.msg, 'Expecting value')
+        self.assertEqual(original.pos, position)
+        # Samma verkliga tolkningsfel lämnade with-blocket före inpackningen.
+        response.__exit__.assert_called_once()
+        error_type, context_error, traceback = response.__exit__.call_args.args
+        self.assertIs(error_type, json.JSONDecodeError)
+        self.assertIs(context_error, original)
+        self.assertIs(traceback, original.__traceback__)
+
     def test_direct_timeout_at_connection_and_read(self):
         for phase in ('connection', 'read'):
             with self.subTest(phase=phase):
@@ -131,6 +156,172 @@ class MarketTimeoutTests(unittest.TestCase):
                 self.assert_timeout(caught.exception)
                 self.assertIs(caught.exception.__cause__, original)
                 self.assert_request(opener, response, phase)
+
+    def invalid_encoding_responses(self):
+        prefix = b'{"text": "'
+        return (
+            ('invalid_start', prefix + b'\xff"}', len(prefix), len(prefix) + 1,
+             'invalid start byte'),
+            ('invalid_continuation', prefix + b'\xe2(\xa1"}',
+             len(prefix), len(prefix) + 1, 'invalid continuation byte'),
+            ('truncated', prefix + b'\xe2\x82', len(prefix), len(prefix) + 2,
+             'unexpected end of data'),
+        )
+
+    def assert_encoding_error(self, error, response, body, start, end, reason):
+        self.assertIs(type(error), RuntimeError)
+        self.assertEqual(
+            str(error), 'TEST: datakällans svar har ogiltig teckenkodning',
+        )
+        original = error.__cause__
+        self.assertIs(type(original), UnicodeDecodeError)
+        self.assertEqual(original.encoding, 'utf-8')
+        self.assertEqual(original.object, body)
+        self.assertEqual((original.start, original.end), (start, end))
+        self.assertEqual(original.reason, reason)
+        response.__exit__.assert_called_once()
+        error_type, context_error, traceback = response.__exit__.call_args.args
+        self.assertIs(error_type, UnicodeDecodeError)
+        self.assertIs(context_error, original)
+        self.assertIs(traceback, original.__traceback__)
+
+    def test_invalid_encoding_has_message_and_original_decode_error(self):
+        for kind, body, start, end, reason in self.invalid_encoding_responses():
+            with self.subTest(kind=kind):
+                opener, response = self.network()
+                # Verklig json.load avkodar bytes; inget undantag injiceras.
+                response.read.return_value = body
+                with patch.object(market_data.urllib.request, 'urlopen', opener):
+                    with self.assertRaises(RuntimeError) as caught:
+                        market_data.fetch_daily_prices('TEST')
+                self.assert_encoding_error(
+                    caught.exception, response, body, start, end, reason,
+                )
+                self.assert_request(opener, response)
+
+    def test_main_invalid_encoding_stops_before_database(self):
+        for kind, body, start, end, reason in self.invalid_encoding_responses():
+            with self.subTest(kind=kind):
+                self.connect.reset_mock()
+                opener, response = self.network()
+                response.read.return_value = body
+                try:
+                    with patch.object(market_data.urllib.request, 'urlopen', opener):
+                        with self.assertRaises(RuntimeError) as caught:
+                            self.run_main()
+                    self.assert_encoding_error(
+                        caught.exception, response, body, start, end, reason,
+                    )
+                    self.assert_request(opener, response)
+                finally:
+                    self.connect.assert_not_called()
+                    self.cursor.executemany.assert_not_called()
+
+    def nonobject_json_responses(self):
+        return (
+            ('empty_list', b'[]'),
+            ('list', b'[{"Time Series (Daily)": {}}]'),
+            ('empty_text', b'""'),
+            ('text', b'"kursdata"'),
+            ('integer', b'0'),
+            ('fraction', b'1.5'),
+            ('true', b'true'),
+            ('false', b'false'),
+            ('null', b'null'),
+        )
+
+    def assert_root_type_error(self, error, response):
+        self.assertIs(type(error), RuntimeError)
+        self.assertEqual(
+            str(error), 'TEST: datakällans svar måste vara ett JSON-objekt',
+        )
+        self.assertIsNone(error.__cause__)
+        self.assertIsNone(error.__context__)
+        # JSON-tolkningen lyckades och svaret stängdes före typkontrollen.
+        response.__exit__.assert_called_once_with(None, None, None)
+
+    def test_nonobject_json_roots_have_clear_error(self):
+        for kind, body in self.nonobject_json_responses():
+            with self.subTest(kind=kind):
+                opener, response = self.network()
+                response.read.return_value = body
+                with patch.object(market_data.urllib.request, 'urlopen', opener):
+                    with self.assertRaises(RuntimeError) as caught:
+                        market_data.fetch_daily_prices('TEST')
+                self.assert_root_type_error(caught.exception, response)
+                self.assert_request(opener, response)
+
+    def test_main_nonobject_json_roots_stop_before_database(self):
+        for kind, body in self.nonobject_json_responses():
+            with self.subTest(kind=kind):
+                self.connect.reset_mock()
+                opener, response = self.network()
+                response.read.return_value = body
+                try:
+                    with patch.object(market_data.urllib.request, 'urlopen', opener):
+                        with self.assertRaises(RuntimeError) as caught:
+                            self.run_main()
+                    self.assert_root_type_error(caught.exception, response)
+                    self.assert_request(opener, response)
+                finally:
+                    self.connect.assert_not_called()
+                    self.cursor.executemany.assert_not_called()
+
+    def invalid_daily_series_responses(self):
+        type_message = 'TEST: dagsserien måste vara ett JSON-objekt'
+        values = (
+            ('empty_list', []), ('list', [self.complete]),
+            ('empty_text', ''), ('text', 'kursdata'),
+            ('zero_integer', 0), ('integer', 42),
+            ('zero_fraction', 0.0), ('fraction', 1.5),
+            ('true', True), ('false', False),
+        )
+        wrong_types = tuple(
+            (kind, json.dumps({'Time Series (Daily)': value}).encode('utf-8'),
+             type_message)
+            for kind, value in values
+        )
+        missing_message = 'API-svaret saknar kursdata.'
+        return wrong_types + (
+            ('missing', b'{}', missing_message),
+            ('null', b'{"Time Series (Daily)": null}', missing_message),
+            ('empty_object', b'{"Time Series (Daily)": {}}', missing_message),
+        )
+
+    def assert_daily_series_error(self, error, response, expected_message):
+        self.assertIs(type(error), RuntimeError)
+        self.assertEqual(str(error), expected_message)
+        self.assertIsNone(error.__cause__)
+        self.assertIsNone(error.__context__)
+        response.__exit__.assert_called_once_with(None, None, None)
+
+    def test_invalid_or_empty_daily_series_have_clear_error(self):
+        for kind, body, message in self.invalid_daily_series_responses():
+            with self.subTest(kind=kind):
+                opener, response = self.network()
+                # Faktisk json.load tolkar objektet och dagsseriens värde.
+                response.read.return_value = body
+                with patch.object(market_data.urllib.request, 'urlopen', opener):
+                    with self.assertRaises(RuntimeError) as caught:
+                        market_data.fetch_daily_prices('TEST')
+                self.assert_daily_series_error(caught.exception, response, message)
+                self.assert_request(opener, response)
+
+    def test_main_invalid_or_empty_daily_series_stop_before_database(self):
+        for kind, body, message in self.invalid_daily_series_responses():
+            with self.subTest(kind=kind):
+                self.connect.reset_mock()
+                opener, response = self.network()
+                response.read.return_value = body
+                try:
+                    with patch.object(market_data.urllib.request, 'urlopen', opener):
+                        with self.assertRaises(RuntimeError) as caught:
+                            self.run_main()
+                    self.assert_daily_series_error(caught.exception, response, message)
+                    self.assert_request(opener, response)
+                finally:
+                    self.connect.assert_not_called()
+                    self.cursor.executemany.assert_not_called()
 
     def test_wrapped_timeout_at_connection_and_read(self):
         for phase in ('connection', 'read'):
@@ -180,6 +371,18 @@ class MarketTimeoutTests(unittest.TestCase):
             actual = market_data.fetch_daily_prices('TEST')
         self.assertEqual(actual, self.prices)
         self.assert_request(opener, response)
+
+    def test_invalid_json_has_message_and_original_decode_error(self):
+        for kind, body, position in self.invalid_json_responses():
+            with self.subTest(kind=kind):
+                opener, response = self.network()
+                # json.load körs oförändrat på svarets bytes; inget parserfel injiceras.
+                response.read.return_value = body
+                with patch.object(market_data.urllib.request, 'urlopen', opener):
+                    with self.assertRaises(RuntimeError) as caught:
+                        market_data.fetch_daily_prices('TEST')
+                self.assert_json_error(caught.exception, response, body, position)
+                self.assert_request(opener, response)
 
     def test_main_timeouts_stop_before_database(self):
         for phase in ('connection', 'read'):
@@ -250,6 +453,22 @@ class MarketTimeoutTests(unittest.TestCase):
         )])
         self.assertEqual([type(value) for value in rows[0]],
                          [str, date, Decimal, Decimal, Decimal, Decimal, int])
+
+    def test_main_invalid_json_stops_before_database(self):
+        for kind, body, position in self.invalid_json_responses():
+            with self.subTest(kind=kind):
+                self.connect.reset_mock()
+                opener, response = self.network()
+                response.read.return_value = body
+                try:
+                    with patch.object(market_data.urllib.request, 'urlopen', opener):
+                        with self.assertRaises(RuntimeError) as caught:
+                            self.run_main()
+                    self.assert_json_error(caught.exception, response, body, position)
+                    self.assert_request(opener, response)
+                finally:
+                    self.connect.assert_not_called()
+                    self.cursor.executemany.assert_not_called()
 
 
 if __name__ == "__main__":
