@@ -1,73 +1,99 @@
 # labbet
 
-Ett pågående lärandeprojekt inom **Linux, Docker, Python och PostgreSQL**. Bygger förståelse för hur en Linux-miljö, containers och Python-kod kan samverka i ett fungerande flöde för marknadsdata.
+Ett pågående lärandeprojekt inom **Linux, Docker, Python och PostgreSQL**. Projektet utvecklas stegvis med fokus på tillförlitlig datainhämtning, beständig lagring och verifierbara resultat.
 
-Projektet utvecklas stegvis, med fokus på att förstå varje del och verifiera resultatet innan nästa del byggs. Den nuvarande grunden är datainhämtning och beständig lagring. Analys och eventuella framtida handelsfunktioner ligger långt längre fram.
+## Projektets utveckling
 
-## Var projektet står
-
-Det första dataflödet fungerar:
+Den första grunden var ett sammanhängande dataflöde:
 
 ```text
 Alpha Vantage → Python → PostgreSQL → separat SQL-läsning
 ```
 
-Python hämtar dagliga öppnings-, högsta-, lägsta- och stängningspriser samt volym för en vald aktiesymbol. Data kommer från Alpha Vantage via `TIME_SERIES_DAILY` med `outputsize=compact`, och priserna är ojusterade.
+| Period | Milstolpe |
+| --- | --- |
+| 4 oktober 2026 | Första flödet verifierat med 100 sparade dagsrader för en vald symbol och separat SQL-kontroll. Två isolerade tester provade omvandling och stopp vid saknad data. |
+| 8–14 oktober 2026 | Datavalideringen utvecklades stegvis och testerna sparades i projektet. Valideringssteget avslutades efter granskning med 32 godkända testmetoder. |
+| 15 oktober 2026 | API-felhantering och ytterligare skydd implementerades och granskades. Den utökade sviten nådde 197 godkända testmetoder i isolerad miljö. Driftaktivering återstod vid denna tidpunkt. |
+| 18 oktober 2026 | API-implementationen driftaktiverad, granskad och godkänd för kontrollerad manuell hämtning för vald ticker. Verklig lagring av 100 handelsdagar, beständig API-state samt backup och isolerad återläsning verifierade. |
 
-Innan lagring omvandlas datum till `date`, priser till `Decimal` och volym till `int`. Därefter skriver Python raderna till PostgreSQL-tabellen `daily_prices` i en transaktion. Sparade data kan läsas separat med SQL.
+## Aktuellt läge
 
-Tabellens primärnyckel kombinerar symbol och handelsdatum. Vid en konflikt lämnas den befintliga raden oförändrad genom `ON CONFLICT ... DO NOTHING`. Databasen har också regler för bland annat prisintervall och icke-negativ volym.
+**API-implementationen är driftaktiverad, granskad och godkänd för kontrollerad manuell hämtning för vald ticker från Alpha Vantage till PostgreSQL.**
 
-## Vad de olika delarna bidrar med
+Det finns belägg för:
+
+- Verklig hämtning och korrekt lagring av 100 handelsdagar.
+- Beständig kvot- och körningshistorik samt bekräftad lagring.
+- Godkända isolerade felhanterings- och integrationstester.
+- Verifierad backup och isolerad återläsning.
+
+**Bredare driftsgodkännande återstår:** den andra leverantören, utökade belastningsprov och senare schemalagd, obevakad körning under längre tid.
+
+Nästa steg är att lägga till en andra API-leverantör med egen nyckel och verifiera integrationen. Därefter följer isolerade belastningsprov med flera samtidiga hämtningar, simulerade svar och fel för att kontrollera botens felhantering, kvotgränser och dataisolering.
+
+## Vad delarna bidrar med
 
 | Del | Roll i projektet |
 | --- | --- |
-| Linux | Miljön där projektet körs och där arbete med tjänster, filer och behörigheter ingår i lärandet. |
-| Docker Compose | Samlar PostgreSQL och Python-jobbet i en gemensam konfiguration med nätverk, miljövariabler och hälsokontroll. |
-| Python | Hämtar API-data, omvandlar värden och skriver rader till databasen. |
-| PostgreSQL | Lagrar data beständigt och gör det möjligt att kontrollera resultatet med SQL. |
-
-Python körs som ett engångsjobb i en egen container. PostgreSQL är en separat tjänst med en namngiven datavolym. Databasen heter `labbet`; Compose-projektet heter för närvarande `trading-bot`.
+| Linux | Servermiljö och lärande kring tjänster, filer och behörigheter. |
+| Docker Compose | Separata containrar för Python och PostgreSQL, med nätverk och beständig datalagring. |
+| Python | Hämtning, validering och förberedelse av data för lagring. |
+| PostgreSQL | Beständig lagring och oberoende kontroll genom SQL. |
 
 ## Projektets filer
+
+Översikt; `*` grupperar närbesläktade filer.
 
 ```text
 .
 ├── README.md
 ├── compose.yaml
+├── compose.api.yaml
 ├── .env.example
 ├── .gitignore
 ├── SELECT.sql
+├── config/
+│   └── api_sources.example.json
+├── docs/
+│   ├── API-SKYDD.md
+│   ├── API-DRIFT.md
+│   └── API-TESTRESULTAT-2026-10-15.md
 ├── ingestion/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   ├── main.py
-│   └── market_data.py
+│   ├── market_data.py
+│   └── api_*.py
+├── scripts/
+│   └── test_api_isolated.py
 ├── sql/
-│   └── 001_create_prices.sql
+│   ├── 001_create_prices.sql
+│   └── 002_api_provenance.sql
 └── tests/
-    └── test_main.py
+    ├── test_main.py
+    ├── test_market_data.py
+    ├── test_api_*.py
+    └── fixtures/
+        ├── README.md
+        ├── *.pem
+        └── *.key
 ```
 
-Ansvaret är uppdelat mellan tre delar: **`market_data.py` hämtar**, **`main.py` omvandlar och sparar**, och **SQL-skriptet skapar tabellen**. Tabellskapandet körs separat och är inte en del av Python-jobbet.
+`ingestion/` innehåller hämtning, validering och lagring. `config/` innehåller en konfigurationsmall och `sql/` databasdefinitionerna. `compose.yaml` beskriver grundmiljön; `compose.api.yaml` är ett separat tillägg för API-vägen.
 
-`compose.yaml` definierar tjänsterna och deras nätverk, hälsokontroll och lagring. `Dockerfile` bygger Python 3.13-miljön med Psycopg som databasberoende från `requirements.txt`. `.env.example` innehåller tomma konfigurationsvärden, och `.gitignore` undantar bland annat hemligheter och lokala arbetsfiler. `SELECT.sql` är ett läsexempel där symbolen fylls i för att matcha den som används i Python.
+`tests/` innehåller sparade tester, och `fixtures/` syntetiska certifikat och testnycklar för lokal HTTPS. `scripts/` innehåller körskriptet för den isolerade verifieringen. Python körs i Docker.
 
-## Vad som har verifierats
+## Verifiering
 
-Tidigare verifiering den **4 oktober 2026** omfattar:
+Den isolerade verifieringen den **15 oktober 2026** godkände **197 testmetoder** i Docker med lokal HTTPS och separat PostgreSQL. Inga verkliga marknads-API-anrop eller produktionsmigreringar ingick i den körningen.
 
-- **100 sparade dagsrader för en testad symbol**, bekräftade genom en separat SQL-läsning efter datainhämtningen. Det visar att dataflödet och lagringen fungerade vid den körningen.
-- **Två godkända isolerade tester av `main.py` med testdubblar.** En komplett påhittad dagsrad omvandlades och skickades till en simulerad insättning. En rad utan stängningspris gav `ValueError` innan någon databasanslutning eller insättning anropades.
+Den **18 oktober 2026** verifierades den första verkliga hämtningen för vald ticker med 100 handelsdagar i PostgreSQL, beständig kvot- och körningshistorik samt lagringsbekräftelse. API-state-backupen verifierades också genom integritets- och innehållskontroller samt isolerad återställning och återöppning i en ny process. Efterverifieringen och återläsningsprovet gjordes utan nya API-anrop; originaldata och backup bevarades.
 
-Testerna använde inga riktiga API- eller databasanslutningar. Testskriptet kördes tillfälligt och finns inte i repot; någon automatiserad testsvit ingår ännu inte. Kontrollen för saknat stängningspris har testats med testdubblar, men har ännu inte verifierats i en ombyggd Docker-image.
+Verifierad hämtning och lagring innebär inte att historiken är fullständig eller att alla marknadsvärden har jämförts med en oberoende källa.
 
-Verifierad lagring innebär inte att alla marknadsvärden har kontrollerats mot en oberoende källa eller att historiken är fullständig.
+Arbetssättet är att göra avgränsade ändringar, verifiera berörda flöden och dokumentera resultat före nästa steg. [Testprotokollet](docs/API-TESTRESULTAT-2026-10-15.md), [API-översikten](docs/API-SKYDD.md) och [driftrutinen](docs/API-DRIFT.md) innehåller fördjupningen.
 
-## Nuvarande begränsningar och fortsatt riktning
+## Fortsatt riktning
 
-Datainhämtningen körs manuellt för en symbol åt gången. Vald ticker fylls i direkt i `main.py`; automatiskt aktieurval saknas. Tom symbol stoppar programmet före API-anropet.
-
-Befintliga rader uppdateras inte när datakällan ändrar sina värden. Valideringen är fortfarande begränsad, och metadata för källa, börs, valuta och justeringsstatus lagras ännu inte. API-åtkomst och anropsgränser beror på den egna nyckeln och datakällans villkor.
-
-Fortsatt utveckling är tänkt att bygga vidare på datakvalitet och verifierbara beräkningar innan analys och backtesting blir aktuella. **Ingen handelsstrategi, backtesting, mäklarintegration eller handel är implementerad.**
+Datakvalitet och kontrollerat driftinförande kommer först. Analys, backtesting, mäklarintegration och handel är senare steg och är ännu inte implementerade.
