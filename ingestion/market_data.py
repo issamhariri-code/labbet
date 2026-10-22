@@ -1,69 +1,40 @@
-import json
-import os
-import urllib.parse
-import urllib.request
-import urllib.error
+"""Public fetch entry point. One reviewed source/credential snapshot per request."""
+from api_runtime import load_runtime
+import time
+
+from api_state import StateStore
 
 
-def fetch_daily_prices(symbol):
-    params = urllib.parse.urlencode({
-        "function": "TIME_SERIES_DAILY",
-        "symbol": symbol,
-        "outputsize": "compact",
-        "apikey": os.environ["ALPHAVANTAGE_API_KEY"],
-    })
-
-    url = "https://www.alphavantage.co/query?" + params
-
+def fetch_daily_prices(symbol, *, source_id=None):
+    if source_id is None:
+        client, profile, contract = load_runtime(symbol)
+    else:
+        client, profile, contract = load_runtime(symbol, source_id=source_id)
     try:
-        with urllib.request.urlopen(url, timeout=30) as response:
-            data = json.load(response)
-    except TimeoutError as error:
-        raise RuntimeError(
-            f"{symbol}: tidsgränsen för hämtning av kursdata överskreds"
-        ) from error
-    except urllib.error.HTTPError as error:
-        raise RuntimeError(
-            f"{symbol}: datakällan svarade med HTTP-fel {error.code}"
-        ) from error
-    except urllib.error.URLError as error:
-        if isinstance(error.reason, TimeoutError):
-            raise RuntimeError(
-                f"{symbol}: tidsgränsen för hämtning av kursdata överskreds"
-            ) from error
-        raise RuntimeError(
-            f"{symbol}: nätverksfel vid hämtning av kursdata"
-        ) from error
+        return client.fetch(profile, contract)
+    finally:
+        client.credentials.close()
+        client.state.close()
 
-    except json.JSONDecodeError as error:
-        raise RuntimeError(
-            f"{symbol}: datakällans svar är inte giltig JSON"
-        ) from error
 
-    except UnicodeDecodeError as error:
-        raise RuntimeError(
-            f"{symbol}: datakällans svar har ogiltig teckenkodning"
-        ) from error
+def record_storage_outcome(batch, *, succeeded, now=None):
+    """Record database outcome separately from fetching, after its commit point.
 
-    if not isinstance(data, dict):
-        raise RuntimeError(
-            f"{symbol}: datakällans svar måste vara ett JSON-objekt"
-        )
-
-    prices = data.get("Time Series (Daily)")
-
-    if prices is not None and not isinstance(prices, dict):
-        raise RuntimeError(
-            f"{symbol}: dagsserien måste vara ett JSON-objekt"
-        )
-
-    if not prices:
-        message = (
-            data.get("Error Message")
-            or data.get("Information")
-            or data.get("Note")
-            or "API-svaret saknar kursdata."
-        )
-        raise RuntimeError(message)
-
-    return prices
+    The optional clock value supports deterministic integration tests. Production
+    uses the actual event time, never backdates a commit to the observation time.
+    Legacy/in-memory test batches without a durable state path have no journal.
+    """
+    path = getattr(batch, "state_path", None)
+    if path is None:
+        return
+    if type(succeeded) is not bool:
+        raise ValueError("Invalid storage outcome")
+    state = StateStore(path, existing_only=True)
+    try:
+        when = time.time() if now is None else now
+        if succeeded:
+            state.record_storage_success(batch.source_id, batch.request_id, when)
+        else:
+            state.record_storage_failure(batch.source_id, batch.request_id, when)
+    finally:
+        state.close()
