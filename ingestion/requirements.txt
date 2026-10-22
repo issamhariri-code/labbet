@@ -1,1 +1,2 @@
 psycopg[binary]>=3.3,<4
+tzdata==2026.5
