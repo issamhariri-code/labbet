@@ -1,0 +1,15 @@
+# Optional deployment overlay. No file is applied automatically by the tests.
+services:
+  ingestion:
+    environment:
+      LABBET_API_CONFIG: /app/config/api_sources.json
+    volumes:
+      - type: bind
+        source: ./config/api_sources.json
+        target: /app/config/api_sources.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - api_state:/var/lib/labbet-api
+volumes:
+  api_state:
