@@ -107,8 +107,6 @@ Kodens ansvar delas bland annat mellan [adaptrar](ingestion/api_adapters.py), [p
 ├── compose.yaml
 ├── compose.api.yaml
 ├── SELECT.sql
-├── config/
-│   └── api_sources.example.json
 ├── ingestion/
 │   ├── Dockerfile
 │   ├── requirements.txt
@@ -126,7 +124,7 @@ Kodens ansvar delas bland annat mellan [adaptrar](ingestion/api_adapters.py), [p
 
 </details>
 
-Konfigurationsmallen innehåller platshållare och är inte en driftklar profil. Verklig källkonfiguration, miljöfiler, nycklar, lokal state, databaser och säkerhetskopior hanteras privat. SQL-migrationerna körs som separata, granskade steg; publicering av källkod aktiverar dem inte.
+Körkonfigurationen tillhandahålls lokalt och versionshanteras inte. `compose.api.yaml` använder den privata filen `config/api_sources.json`; den behöver finnas lokalt när API-tillägget används. Hela `config/` är undantagen genom `.gitignore`. Miljöfiler, nycklar, lokal state, databaser och säkerhetskopior hanteras också privat. SQL-migrationerna körs som separata, granskade steg; publicering av källkod aktiverar dem inte.
 
 ## Tester och verifiering
 
