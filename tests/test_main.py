@@ -7,17 +7,20 @@ from decimal import Decimal
 import io
 from pathlib import Path
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
 
 MAIN = Path(__file__).resolve().parents[1] / "ingestion" / "main.py"
+DB_OPTIONS = "-c statement_timeout=15000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=30000"
+sys.path.insert(0, str(MAIN.parent))
 
 #skapar påhittad kursdata
 class MainValidationTests(unittest.TestCase):
     def setUp(self):
         self.connect = MagicMock()
+        self.persist = Mock(return_value=SimpleNamespace(replayed=False))
         self.complete = {
             "1. open": "10.00",
             "2. high": "11.00",
@@ -27,6 +30,7 @@ class MainValidationTests(unittest.TestCase):
         }
 #testet skickas till denna funktion
     def run_main(self, prices):
+        self.persist.reset_mock()
         # Läs produktionskoden; ersätt bara den tomma tickern i testets minne.
         # Valideringsloopen och databasflödet körs oförändrade.
         tree = ast.parse(MAIN.read_text(encoding="utf-8"), filename=str(MAIN))
@@ -41,23 +45,27 @@ class MainValidationTests(unittest.TestCase):
         ast.fix_missing_locations(tree)
 #rad 44 ersätter API data med vår påhittade testdata
         market_data = ModuleType("market_data")
-        market_data.fetch_daily_prices = Mock(return_value=prices)
+        market_data.fetch_daily_prices = Mock(return_value=SimpleNamespace(
+            prices=prices, storage_context={}, source_id="test", request_id="test",
+        ))
+        market_data.record_storage_outcome = Mock()
         psycopg = ModuleType("psycopg")
         psycopg.connect = self.connect
+        storage = ModuleType("api_storage")
+        storage.persist_batch = self.persist
 
         with patch.dict(sys.modules, {
-            "market_data": market_data, "psycopg": psycopg,
+            "market_data": market_data, "psycopg": psycopg, "api_storage": storage,
         }), redirect_stdout(io.StringIO()):
-            exec(compile(tree, str(MAIN), "exec"), {
-                "__name__": "__main__", "__file__": str(MAIN),
-            })
+            namespace = {"__name__": "labbet_test_main", "__file__": str(MAIN)}
+            exec(compile(tree, str(MAIN), "exec"), namespace)
+            namespace["run"]("TEST")
 
     def test_complete_row_keeps_values_types_and_order(self):
         self.run_main({"2026-09-30": self.complete})
-        self.connect.assert_called_once_with(connect_timeout=10)
-        cursor = self.connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
-        cursor.executemany.assert_called_once()
-        rows = cursor.executemany.call_args.args[1]
+        self.connect.assert_called_once_with(connect_timeout=10, options=DB_OPTIONS)
+        self.persist.assert_called_once()
+        rows = self.persist.call_args.kwargs["rows"]
         self.assertEqual(rows, [(
             "TEST", date(2026, 9, 30),
             Decimal("10.00"), Decimal("11.00"),
@@ -89,6 +97,7 @@ class MainValidationTests(unittest.TestCase):
                     str(error.exception), f"TEST 2026-09-30: {name} saknas",
                 )
                 self.connect.assert_not_called()
+                self.persist.assert_not_called()
 
     def test_invalid_close_has_clear_error(self):
         invalid = self.complete.copy()
@@ -100,6 +109,7 @@ class MainValidationTests(unittest.TestCase):
         self.assertEqual(str(error.exception),
         "TEST 2026-09-30: stängningspris är inte ett giltigt tal",)
         self.connect.assert_not_called()
+        self.persist.assert_not_called()
 
     def test_invalid_open_has_clear_error(self):
         invalid = self.complete.copy()
@@ -111,6 +121,7 @@ class MainValidationTests(unittest.TestCase):
         self.assertEqual(str(error.exception),
         "TEST 2026-09-30: öppningspris är inte ett giltigt tal",)
         self.connect.assert_not_called()
+        self.persist.assert_not_called()
 
     def test_invalid_high_has_clear_error(self):
         invalid = self.complete.copy()
@@ -122,6 +133,7 @@ class MainValidationTests(unittest.TestCase):
         self.assertEqual(str(error.exception),
         "TEST 2026-09-30: högsta pris är inte ett giltigt tal",)
         self.connect.assert_not_called()
+        self.persist.assert_not_called()
 
     def test_invalid_low_has_clear_error(self):
         invalid = self.complete.copy()
@@ -133,6 +145,7 @@ class MainValidationTests(unittest.TestCase):
         self.assertEqual(str(error.exception),
         "TEST 2026-09-30: lägsta pris är inte ett giltigt tal",)
         self.connect.assert_not_called()
+        self.persist.assert_not_called()
 
     def test_invalid_volume_has_clear_error(self):
         invalid = self.complete.copy()
@@ -146,6 +159,7 @@ class MainValidationTests(unittest.TestCase):
             "TEST 2026-09-30: volym är inte ett giltigt heltal",
         )
         self.connect.assert_not_called()
+        self.persist.assert_not_called()
 
     def test_negative_volume_has_clear_error(self):
         for volume in ("-1", -1):
@@ -170,6 +184,7 @@ class MainValidationTests(unittest.TestCase):
                         "TEST 2026-09-30: volym får inte vara negativ",
                     )
                     self.connect.assert_not_called()
+                    self.persist.assert_not_called()
 
     def test_zero_volume_is_accepted(self):
         for volume in ("0", 0):
@@ -180,12 +195,10 @@ class MainValidationTests(unittest.TestCase):
 
                 self.run_main({"2026-09-30": values})
 
-                self.connect.assert_called_once_with(connect_timeout=10)
-                connection = self.connect.return_value.__enter__.return_value
-                cursor = connection.cursor.return_value.__enter__.return_value
-                cursor.executemany.assert_called_once()
+                self.connect.assert_called_once_with(connect_timeout=10, options=DB_OPTIONS)
+                self.persist.assert_called_once()
 
-                rows = cursor.executemany.call_args.args[1]
+                rows = self.persist.call_args.kwargs["rows"]
                 self.assertEqual(rows[0][-1], 0)
                 self.assertIs(type(rows[0][-1]), int)
 
@@ -204,6 +217,7 @@ class MainValidationTests(unittest.TestCase):
                     "TEST 2026-09-30: volym är inte ett giltigt heltal",
                 )
                 self.connect.assert_not_called()
+                self.persist.assert_not_called()
 
     def test_invalid_volume_type_has_clear_error(self):
         for volume in ([], True, False, 10.0):
@@ -228,6 +242,7 @@ class MainValidationTests(unittest.TestCase):
                         "TEST 2026-09-30: volym är inte ett giltigt heltal",
                     )
                     self.connect.assert_not_called()
+                    self.persist.assert_not_called()
 
     def test_invalid_trade_date_has_clear_error(self):
         with self.assertRaises(ValueError) as error:
@@ -238,6 +253,7 @@ class MainValidationTests(unittest.TestCase):
             "TEST 2026-02-30: ogiltigt handelsdatum",
         )
         self.connect.assert_not_called()
+        self.persist.assert_not_called()
 
     def test_empty_fields_stop_before_database(self):
         fields = {
@@ -265,6 +281,7 @@ class MainValidationTests(unittest.TestCase):
                     self.assertIn("TEST 2026-09-30", message)
                     self.assertIn(f"{name} saknas", message)
                     self.connect.assert_not_called()
+                    self.persist.assert_not_called()
 
     def test_non_finite_prices_stop_before_database(self):
         fields = {
@@ -289,6 +306,7 @@ class MainValidationTests(unittest.TestCase):
                         f"TEST 2026-09-30: {name} måste vara ett ändligt tal",
                     )
                     self.connect.assert_not_called()
+                    self.persist.assert_not_called()
 
     def test_nonpositive_prices_stop_before_database(self):
         fields = {
@@ -319,6 +337,7 @@ class MainValidationTests(unittest.TestCase):
                             f"TEST 2026-09-30: {name} måste vara större än noll",
                         )
                         self.connect.assert_not_called()
+                        self.persist.assert_not_called()
 
     def test_high_below_low_stops_before_database(self):
         for preceding in (False, True):
@@ -340,6 +359,7 @@ class MainValidationTests(unittest.TestCase):
                     "TEST 2026-09-30: högsta pris är lägre än lägsta pris",
                 )
                 self.connect.assert_not_called()
+                self.persist.assert_not_called()
 
     def test_equal_high_and_low_is_accepted(self):
         row = self.complete.copy()
@@ -348,7 +368,7 @@ class MainValidationTests(unittest.TestCase):
             "3. low": "10", "4. close": "10",
         })
         self.run_main({"2026-09-30": row})
-        self.connect.assert_called_once_with(connect_timeout=10)
+        self.connect.assert_called_once_with(connect_timeout=10, options=DB_OPTIONS)
 
     def test_open_outside_interval_stops_before_database(self):
         for value in ("8.99", "11.01"):
@@ -371,6 +391,7 @@ class MainValidationTests(unittest.TestCase):
                         "TEST 2026-09-30: öppningspris ligger utanför prisintervallet",
                     )
                     self.connect.assert_not_called()
+                    self.persist.assert_not_called()
 
     def test_open_inside_and_at_bounds_is_accepted(self):
         for value in ("9", "10", "11"):
@@ -379,7 +400,7 @@ class MainValidationTests(unittest.TestCase):
                 row = self.complete.copy()
                 row["1. open"] = value
                 self.run_main({"2026-09-30": row})
-                self.connect.assert_called_once_with(connect_timeout=10)
+                self.connect.assert_called_once_with(connect_timeout=10, options=DB_OPTIONS)
 
     def test_close_outside_interval_stops_before_database(self):
         for value in ("8.99", "11.01"):
@@ -402,6 +423,7 @@ class MainValidationTests(unittest.TestCase):
                         "TEST 2026-09-30: stängningspris ligger utanför prisintervallet",
                     )
                     self.connect.assert_not_called()
+                    self.persist.assert_not_called()
 
     def test_close_inside_and_at_bounds_is_accepted(self):
         for value in ("9", "10", "11"):
@@ -410,7 +432,7 @@ class MainValidationTests(unittest.TestCase):
                 row = self.complete.copy()
                 row["4. close"] = value
                 self.run_main({"2026-09-30": row})
-                self.connect.assert_called_once_with(connect_timeout=10)
+                self.connect.assert_called_once_with(connect_timeout=10, options=DB_OPTIONS)
 
     def test_volume_above_limit_stops_before_database(self):
         for number in (9_223_372_036_854_775_808, 10**30):
@@ -436,6 +458,7 @@ class MainValidationTests(unittest.TestCase):
                             "TEST 2026-09-30: volym överskrider databasens heltalsgräns",
                         )
                         self.connect.assert_not_called()
+                        self.persist.assert_not_called()
 
     def test_volume_at_and_below_limit_is_preserved(self):
         for number in (9_223_372_036_854_775_806, 9_223_372_036_854_775_807):
@@ -445,10 +468,9 @@ class MainValidationTests(unittest.TestCase):
                     row = self.complete.copy()
                     row["5. volume"] = convert(number)
                     self.run_main({"2026-09-30": row})
-                    self.connect.assert_called_once_with(connect_timeout=10)
-                    cursor = self.connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
-                    cursor.executemany.assert_called_once()
-                    volume = cursor.executemany.call_args.args[1][0][-1]
+                    self.connect.assert_called_once_with(connect_timeout=10, options=DB_OPTIONS)
+                    self.persist.assert_called_once()
+                    volume = self.persist.call_args.kwargs["rows"][0][-1]
                     self.assertEqual(volume, number)
                     self.assertIs(type(volume), int)
 
@@ -481,6 +503,7 @@ class MainValidationTests(unittest.TestCase):
                             f"TEST 2026-09-30: {name} överskrider databasens prisgräns",
                         )
                         self.connect.assert_not_called()
+                        self.persist.assert_not_called()
 
     def test_prices_at_and_below_limit_are_preserved(self):
         for field, position in (
@@ -496,10 +519,9 @@ class MainValidationTests(unittest.TestCase):
                         row["1. open"] = row["4. close"] = "999999999999.999999"
                     row[field] = value
                     self.run_main({"2026-09-30": row})
-                    self.connect.assert_called_once_with(connect_timeout=10)
-                    cursor = self.connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
-                    cursor.executemany.assert_called_once()
-                    price = cursor.executemany.call_args.args[1][0][position]
+                    self.connect.assert_called_once_with(connect_timeout=10, options=DB_OPTIONS)
+                    self.persist.assert_called_once()
+                    price = self.persist.call_args.kwargs["rows"][0][position]
                     self.assertEqual(price, Decimal(value))
                     self.assertIs(type(price), Decimal)
 
@@ -532,6 +554,7 @@ class MainValidationTests(unittest.TestCase):
                             f"TEST 2026-09-30: {name}: kan inte lagras exakt med sex decimaler",
                         )
                         self.connect.assert_not_called()
+                        self.persist.assert_not_called()
 
     def test_six_decimals_and_trailing_zero_are_preserved(self):
         for field, position, value in (
@@ -546,10 +569,9 @@ class MainValidationTests(unittest.TestCase):
                     row = self.complete.copy()
                     row[field] = value + suffix
                     self.run_main({"2026-09-30": row})
-                    self.connect.assert_called_once_with(connect_timeout=10)
-                    cursor = self.connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
-                    cursor.executemany.assert_called_once()
-                    price = cursor.executemany.call_args.args[1][0][position]
+                    self.connect.assert_called_once_with(connect_timeout=10, options=DB_OPTIONS)
+                    self.persist.assert_called_once()
+                    price = self.persist.call_args.kwargs["rows"][0][position]
                     self.assertIs(type(price), Decimal)
                     self.assertEqual(str(price), value + suffix)
 
@@ -589,6 +611,7 @@ class MainValidationTests(unittest.TestCase):
                             f"TEST 2026-09-30: {name} måste vara text eller heltal",
                         )
                         self.connect.assert_not_called()
+                        self.persist.assert_not_called()
 
     def test_string_and_integer_prices_are_preserved(self):
         for field, position in (
@@ -602,10 +625,9 @@ class MainValidationTests(unittest.TestCase):
                         row[price_field] = "10"
                     row[field] = value
                     self.run_main({"2026-09-30": row})
-                    self.connect.assert_called_once_with(connect_timeout=10)
-                    cursor = self.connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
-                    cursor.executemany.assert_called_once()
-                    price = cursor.executemany.call_args.args[1][0][position]
+                    self.connect.assert_called_once_with(connect_timeout=10, options=DB_OPTIONS)
+                    self.persist.assert_called_once()
+                    price = self.persist.call_args.kwargs["rows"][0][position]
                     self.assertEqual(price, Decimal("10"))
                     self.assertIs(type(price), Decimal)
 
@@ -629,6 +651,7 @@ class MainValidationTests(unittest.TestCase):
                 self.assertEqual(str(caught.exception.__cause__), cause_message)
         finally:
             self.connect.assert_not_called()
+            self.persist.assert_not_called()
 
     def test_invalid_and_noncanonical_date_strings_stop_before_database(self):
         invalid = (
@@ -689,10 +712,9 @@ class MainValidationTests(unittest.TestCase):
                     prices[value] = self.complete.copy()
                     expected_dates.append(expected)
                     self.run_main(prices)
-                    self.connect.assert_called_once_with(connect_timeout=10)
-                    cursor = self.connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
-                    cursor.executemany.assert_called_once()
-                    rows = cursor.executemany.call_args.args[1]
+                    self.connect.assert_called_once_with(connect_timeout=10, options=DB_OPTIONS)
+                    self.persist.assert_called_once()
+                    rows = self.persist.call_args.kwargs["rows"]
                     self.assertEqual(rows, [
                         ("TEST", parsed_date, Decimal("10.00"), Decimal("11.00"),
                          Decimal("9.00"), Decimal("10.50"), 1000)
