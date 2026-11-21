@@ -6,6 +6,9 @@ secrets/
 *.pem
 *.key
 
+# Privat körkonfiguration
+/config/
+
 # Lokala arbetsdokument
 /AGENTS.md
 /Labbet-Trading-Bot-STATE.md
