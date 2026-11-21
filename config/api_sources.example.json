@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "environment": "production",
+  "state_path": "/var/lib/labbet-api/state.sqlite",
+  "sources": [
+    {
+      "adapter": "alphavantage-daily-v1",
+      "profile": {
+        "source_id": "alphavantage",
+        "account_ref": "replace-with-reviewed-account-reference",
+        "environment": "production",
+        "endpoint": "https://www.alphavantage.co/query",
+        "credential_env": "ALPHAVANTAGE_API_KEY",
+        "credential_version": "v1",
+        "quota_scope": "replace-with-actual-provider-quota-scope",
+        "config_version": "v1",
+        "owner": "operator",
+        "purpose": "market-data-read",
+        "timezone": "UTC",
+        "currency": null,
+        "exchange": null,
+        "schema_version": "alphavantage-daily-v1",
+        "price_basis": "raw",
+        "rights_verified": false,
+        "rights_review_date": null,
+        "review_due_date": null,
+        "max_attempts_per_window": 1,
+        "quota_window_seconds": 60,
+        "max_concurrency": 1
+      },
+      "fetch_policy": {
+        "total_seconds": 30,
+        "socket_seconds": 10,
+        "max_attempts": 3,
+        "max_bytes": 1048576,
+        "base_delay": 1,
+        "max_delay": 10
+      },
+      "instruments": []
+    }
+  ]
+}
