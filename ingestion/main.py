@@ -20,8 +20,12 @@ def run(symbol, *, source_id=None):
         batch = fetch_daily_prices(symbol, source_id=source_id)
     rows = prepare_rows(symbol, batch.prices)
     try:
+        # Validate complete request evidence before opening a database connection.
+        storage_context = batch.storage_context
         with psycopg.connect(connect_timeout=10, options=DB_OPTIONS) as connection:
-            result = persist_batch(connection, rows=rows, **batch.storage_context)
+            # The job owns the commit; persist_batch nests a savepoint here.
+            with connection.transaction():
+                result = persist_batch(connection, rows=rows, **storage_context)
     except BaseException:
         # Failure reporting is best effort and must never replace the database
         # exception or cancellation. A completed fetch alone is not a commit.
